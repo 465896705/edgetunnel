@@ -204,6 +204,96 @@ export default {
 						return new Response(JSON.stringify(检测代理响应, null, 2), { status: 200, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
 					}
 
+					} else if (访问路径 === 'admin/node-check') {// 节点健康检测：仅检测管理员提供的节点和受限目标
+						const JSON头 = { 'Content-Type': 'application/json;charset=utf-8', 'Cache-Control': 'no-store' };
+						const 允许目标 = new Map([
+							['cloudflare.com', '/cdn-cgi/trace'],
+							['www.google.com', '/generate_204'],
+							['gemini.google.com', '/'],
+							['www.tiktok.com', '/robots.txt']
+						]);
+						const parseNode = value => {
+							const raw = String(value || '').trim();
+							if (!raw) return null;
+							if (raw.includes('://')) {
+								try {
+									const parsed = new URL(raw);
+									return { hostname: parsed.hostname, port: Number(parsed.port) || 443, label: raw };
+								} catch (_) { return null; }
+							}
+							if (raw.startsWith('[')) {
+								const end = raw.indexOf(']:');
+								return end > 0 ? { hostname: raw.slice(1, end), port: Number(raw.slice(end + 2)) || 443, label: raw } : { hostname: raw.slice(1, -1), port: 443, label: raw };
+							}
+							const parts = raw.split(':');
+							return parts.length === 2 && /^\d+$/.test(parts[1])
+								? { hostname: parts[0], port: Number(parts[1]) || 443, label: raw }
+								: { hostname: raw, port: 443, label: raw };
+						};
+						const nodeText = url.searchParams.get('nodes') || env.PROXYIP || await env.KV.get('ADD.txt') || '';
+						const 节点列表 = [...new Map(nodeText.split(/[\s,，]+/).map(parseNode).filter(Boolean).map(item => [item.label, item])).values()].slice(0, 20);
+						const 目标列表 = [...new Set((url.searchParams.get('targets') || 'cloudflare.com,gemini.google.com,www.tiktok.com').split(/[\s,，]+/).map(v => v.trim().toLowerCase()).filter(v => 允许目标.has(v)))].slice(0, 4);
+						if (!节点列表.length) return new Response(JSON.stringify({ success: false, error: '没有可检测节点，请通过 nodes 参数或 PROXYIP/ADD.txt 提供节点' }, null, 2), { status: 400, headers: JSON头 });
+						if (!目标列表.length) return new Response(JSON.stringify({ success: false, error: '没有合法检测目标，仅支持 cloudflare.com、www.google.com、gemini.google.com、www.tiktok.com' }, null, 2), { status: 400, headers: JSON头 });
+						const 检测单节点 = async (node, target) => {
+							const started = Date.now();
+							let tcpSocket = null, tlsSocket = null, phase = 'tcp';
+							const result = { node: node.label, target, success: false, phase, tcpMs: null, tlsMs: null, ttfbMs: null, status: null, error: null };
+							try {
+								const TCP连接 = 创建请求TCP连接器(request);
+								tcpSocket = TCP连接({ hostname: node.hostname, port: node.port });
+								await withTimeout(tcpSocket.opened, CONNECT_TIMEOUT_MS, 'TCP 建连超时');
+								result.tcpMs = Date.now() - started;
+								phase = result.phase = 'tls';
+								tlsSocket = new TlsClient(tcpSocket, { serverName: target, insecure: true });
+								await withTimeout(tlsSocket.handshake(), CONNECT_TIMEOUT_MS, 'TLS 握手超时');
+								result.tlsMs = Date.now() - started - result.tcpMs;
+								phase = result.phase = 'http';
+								const writer = tlsSocket.writable.getWriter();
+								try {
+									await withTimeout(writer.write(new TextEncoder().encode('GET ' + 允许目标.get(target) + ' HTTP/1.1\r\nHost: ' + target + '\r\nUser-Agent: Mozilla/5.0 node-health-check\r\nConnection: close\r\nAccept: */*\r\n\r\n')), CONNECT_TIMEOUT_MS, 'HTTP 请求发送超时');
+								} finally { try { writer.releaseLock(); } catch (_) {} }
+								const reader = tlsSocket.readable.getReader();
+								let buffer = new Uint8Array(0), headerEnd = -1;
+								try {
+									while (buffer.byteLength < 64 * 1024 && headerEnd < 0) {
+										const packet = await withTimeout(reader.read(), 5000, '等待 HTTP 响应超时');
+										if (packet.done) break;
+										if (packet.value?.byteLength) {
+											buffer = 拼接字节数据(buffer, packet.value);
+											for (let i = 0; i <= buffer.byteLength - 4; i++) {
+												if (buffer[i] === 13 && buffer[i + 1] === 10 && buffer[i + 2] === 13 && buffer[i + 3] === 10) { headerEnd = i + 4; break; }
+											}
+										}
+									}
+								} finally { try { reader.releaseLock(); } catch (_) {} }
+								if (headerEnd < 0) throw new Error('HTTP 响应头无效或超时');
+								result.ttfbMs = Date.now() - started;
+								const header = new TextDecoder().decode(buffer.slice(0, headerEnd));
+								const statusMatch = header.match(/^HTTP\/\d(?:\.\d)?\s+(\d+)/);
+								result.status = statusMatch ? Number(statusMatch[1]) : null;
+								if (!result.status) throw new Error('无法解析 HTTP 状态码');
+								result.success = result.status >= 200 && result.status < 500;
+								result.phase = result.success ? 'ok' : 'http';
+								if (!result.success) result.error = 'HTTP ' + result.status;
+							} catch (error) {
+								result.phase = phase;
+								result.error = error?.message || String(error);
+							} finally {
+								try { tlsSocket ? await tlsSocket.close() : await tcpSocket?.close?.(); } catch (_) {}
+							}
+							result.totalMs = Date.now() - started;
+							return result;
+						};
+						const tasks = [];
+						for (const node of 节点列表) for (const target of 目标列表) tasks.push([node, target]);
+						const results = [];
+						for (let i = 0; i < tasks.length; i += 6) {
+							results.push(...await Promise.all(tasks.slice(i, i + 6).map(([node, target]) => 检测单节点(node, target))));
+						}
+						return new Response(JSON.stringify({ success: true, generatedAt: new Date().toISOString(), limits: { nodes: 20, targets: 4, concurrency: 6 }, results }, null, 2), { status: 200, headers: JSON头 });
+					}
+
 					config_JSON = await 读取config_JSON(env, host, userID, UA);
 
 					if (访问路径 === 'admin/init') {// 重置配置为默认值

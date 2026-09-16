@@ -204,7 +204,7 @@ export default {
 						return new Response(JSON.stringify(检测代理响应, null, 2), { status: 200, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
 					}
 
-					} else if (访问路径 === 'admin/node-check') {// 节点健康检测：仅检测管理员提供的节点和受限目标
+					else if (访问路径 === 'admin/node-check') {// 节点健康检测：仅检测管理员提供的节点和受限目标
 						const JSON头 = { 'Content-Type': 'application/json;charset=utf-8', 'Cache-Control': 'no-store' };
 						const 允许目标 = new Map([
 							['cloudflare.com', '/cdn-cgi/trace'],

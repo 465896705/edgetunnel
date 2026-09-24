@@ -655,9 +655,39 @@ async function 获取手机检测任务(env) {
 	let raw = await env.KV.get('ADD.txt') || env.PROXYIP || '';
 	let list = [];
 	try { list = await 整理成数组(raw); } catch (_) { list = String(raw).split(/[\r\n,，]+/); }
-	list = [...new Set(list.map(v => String(v || '').trim()).filter(Boolean))].slice(0, 200);
+	list = [...new Set(list.map(v => String(v || '').trim()).filter(Boolean))];
+
+	// 与本地订阅生成逻辑保持一致：先展开 https/sub:// 优选源，再把实际入口交给手机测试。
+	const apiSources = [], directEntries = [], proxyLinks = [];
+	for (const item of list) {
+		const rawItem = String(item || '').trim();
+		if (!rawItem) continue;
+		const addressPart = rawItem.split('#')[0].trim();
+		if (/^sub:\/\//i.test(addressPart) || /^https?:\/\//i.test(addressPart)) apiSources.push(rawItem);
+		else if (/^[a-z][a-z0-9+.-]*:\/\//i.test(addressPart)) proxyLinks.push(rawItem);
+		else directEntries.push(rawItem);
+	}
+
+	let expandedEntries = [], expandedLinks = '';
+	if (apiSources.length) {
+		try {
+			const apiResult = await 请求优选API(apiSources, '443', 5000);
+			expandedEntries = Array.isArray(apiResult?.[0]) ? apiResult[0] : [];
+			expandedLinks = typeof apiResult?.[1] === 'string' ? apiResult[1] : '';
+		} catch (_) { }
+	}
+	if (expandedLinks) proxyLinks.push(...expandedLinks.split(/\r?\n/).map(v => v.trim()).filter(Boolean));
+
+	const entries = [...new Set(directEntries.concat(expandedEntries).map(v => String(v || '').trim()).filter(Boolean))].slice(0, 200);
 	const tasks = [];
-	for (const item of list) tasks.push({ id: await MD5MD5(item), node: item, label: 手机检测备注(item) });
+	for (const item of entries) {
+		const label = 手机检测备注(item);
+		tasks.push({ id: await MD5MD5(item), node: item, label, selectName: label, kind: 'entry' });
+	}
+	for (const item of [...new Set(proxyLinks)].slice(0, Math.max(0, 200 - tasks.length))) {
+		const label = 手机检测备注(item);
+		tasks.push({ id: await MD5MD5(item), node: item, label, selectName: label, kind: 'proxy-link' });
+	}
 	return tasks;
 }
 

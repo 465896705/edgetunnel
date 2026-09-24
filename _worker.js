@@ -428,9 +428,12 @@ export default {
 							const total = Number.isFinite(config_JSON.CF.Usage.max) ? (config_JSON.CF.Usage.max / 1000) * 1024 : 1024 * 100;
 							responseHeaders["Subscription-Userinfo"] = `upload=${pagesSum}; download=${workersSum}; total=${total}; expire=4102329600`; // 2099-12-31 到期时间
 						}
+						const 手机测试订阅 = ['1', 'true'].includes(String(url.searchParams.get('mobiletest') || '').toLowerCase());
 						const isSubConverterRequest = url.searchParams.has('b64') || url.searchParams.has('base64') || request.headers.get('subconverter-request') || request.headers.get('subconverter-version') || ua.includes('subconverter') || ua.includes(('CF-Workers-SUB').toLowerCase()) || 作为优选订阅生成器;
-						const 订阅类型 = isSubConverterRequest
+						const 订阅类型 = 手机测试订阅
 							? 'mixed'
+							: isSubConverterRequest
+								? 'mixed'
 							: url.searchParams.has('target')
 								? url.searchParams.get('target')
 								: url.searchParams.has('clash') || ua.includes('clash') || ua.includes('meta') || ua.includes('mihomo')
@@ -583,6 +586,7 @@ export default {
 								});
 						}
 
+						if (手机测试订阅 && 订阅类型 === 'mixed') 订阅内容 = await 重命名手机测试订阅(订阅内容);
 						if (订阅类型 === 'mixed' && (!ua.includes('mozilla') || url.searchParams.has('b64') || url.searchParams.has('base64'))) 订阅内容 = btoa(订阅内容);
 
 						if (订阅类型 === 'singbox') {
@@ -651,6 +655,108 @@ function 手机检测备注(raw) {
 	try { return decodeURIComponent(text.slice(hash + 1)) || text; } catch (_) { return text.slice(hash + 1) || text; }
 }
 
+
+function 手机Base64UTF8解码(value) {
+	try {
+		let normalized = String(value || '').replace(/\s+/g, '').replace(/-/g, '+').replace(/_/g, '/');
+		while (normalized.length % 4) normalized += '=';
+		const binary = atob(normalized);
+		const bytes = Uint8Array.from(binary, c => c.charCodeAt(0));
+		return new TextDecoder().decode(bytes);
+	} catch (_) { return ''; }
+}
+
+function 手机Base64UTF8编码(value) {
+	const bytes = new TextEncoder().encode(String(value || ''));
+	let binary = '';
+	for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+	return btoa(binary);
+}
+
+function 解析手机节点信息(raw, fallbackLabel = '') {
+	const text = String(raw || '').trim();
+	let label = String(fallbackLabel || '').trim();
+	let hostname = '';
+
+	if (/^vmess:\/\//i.test(text)) {
+		try {
+			const json = JSON.parse(手机Base64UTF8解码(text.slice('vmess://'.length)));
+			hostname = String(json.add || '').trim().toLowerCase();
+			label = String(json.ps || label || hostname || 'VMess').trim();
+			return { hostname, label, protocol: 'vmess', vmess: json };
+		} catch (_) { }
+	}
+
+	try {
+		const parsed = new URL(text);
+		hostname = String(parsed.hostname || '').replace(/^\[|\]$/g, '').toLowerCase();
+		if (text.includes('#')) {
+			const fragment = text.slice(text.lastIndexOf('#') + 1);
+			try { label = decodeURIComponent(fragment) || label; }
+			catch (_) { label = fragment || label; }
+		}
+		return {
+			hostname,
+			label: label || hostname || text,
+			protocol: parsed.protocol.replace(':', '').toLowerCase(),
+			vmess: null
+		};
+	} catch (_) { }
+
+	const noRemark = text.split('#')[0].trim();
+	if (noRemark.startsWith('[')) {
+		const end = noRemark.indexOf(']');
+		hostname = end > 0 ? noRemark.slice(1, end) : noRemark;
+	} else {
+		const parts = noRemark.split(':');
+		hostname = parts[0] || noRemark;
+	}
+
+	return {
+		hostname: String(hostname || '').toLowerCase(),
+		label: label || noRemark || text,
+		protocol: '',
+		vmess: null
+	};
+}
+
+async function 生成手机节点选择名(raw, fallbackLabel = '') {
+	const info = 解析手机节点信息(raw, fallbackLabel);
+	const label = String(info.label || fallbackLabel || info.hostname || '节点').trim();
+	const stableKey = `${info.hostname || 'unknown'}#${label}`;
+	const shortId = (await MD5MD5(stableKey)).slice(0, 8);
+	return `MC-${shortId} ${label}`;
+}
+
+async function 重命名手机测试订阅(订阅内容) {
+	const lines = String(订阅内容 || '').split(/\r?\n/);
+	const output = [];
+
+	for (const rawLine of lines) {
+		const line = rawLine.trim();
+		if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(line)) {
+			output.push(rawLine);
+			continue;
+		}
+
+		const info = 解析手机节点信息(line);
+		const selectName = await 生成手机节点选择名(line, info.label);
+
+		if (info.protocol === 'vmess' && info.vmess) {
+			try {
+				const vmess = { ...info.vmess, ps: selectName };
+				output.push('vmess://' + 手机Base64UTF8编码(JSON.stringify(vmess)));
+				continue;
+			} catch (_) { }
+		}
+
+		const hash = line.lastIndexOf('#');
+		output.push((hash >= 0 ? line.slice(0, hash) : line) + '#' + encodeURIComponent(selectName));
+	}
+
+	return output.join('\n');
+}
+
 async function 获取手机检测任务(env) {
 	let raw = await env.KV.get('ADD.txt') || env.PROXYIP || '';
 	let list = [];
@@ -668,25 +774,29 @@ async function 获取手机检测任务(env) {
 		else directEntries.push(rawItem);
 	}
 
-	let expandedEntries = [], expandedLinks = '';
+	let expandedEntries = [], expandedLinks = [];
 	if (apiSources.length) {
 		try {
 			const apiResult = await 请求优选API(apiSources, '443', 5000);
 			expandedEntries = Array.isArray(apiResult?.[0]) ? apiResult[0] : [];
-			expandedLinks = typeof apiResult?.[1] === 'string' ? apiResult[1] : '';
+			expandedLinks = Array.isArray(apiResult?.[1])
+				? apiResult[1]
+				: (typeof apiResult?.[1] === 'string' ? apiResult[1].split(/\r?\n/) : []);
 		} catch (_) { }
 	}
-	if (expandedLinks) proxyLinks.push(...expandedLinks.split(/\r?\n/).map(v => v.trim()).filter(Boolean));
+	if (expandedLinks.length) proxyLinks.push(...expandedLinks.map(v => String(v || '').trim()).filter(Boolean));
 
 	const entries = [...new Set(directEntries.concat(expandedEntries).map(v => String(v || '').trim()).filter(Boolean))].slice(0, 200);
 	const tasks = [];
 	for (const item of entries) {
 		const label = 手机检测备注(item);
-		tasks.push({ id: await MD5MD5(item), node: item, label, selectName: label, kind: 'entry' });
+		const selectName = await 生成手机节点选择名(item, label);
+		tasks.push({ id: await MD5MD5(item), node: item, label, selectName, kind: 'entry' });
 	}
 	for (const item of [...new Set(proxyLinks)].slice(0, Math.max(0, 200 - tasks.length))) {
 		const label = 手机检测备注(item);
-		tasks.push({ id: await MD5MD5(item), node: item, label, selectName: label, kind: 'proxy-link' });
+		const selectName = await 生成手机节点选择名(item, label);
+		tasks.push({ id: await MD5MD5(item), node: item, label, selectName, kind: 'proxy-link' });
 	}
 	return tasks;
 }
@@ -819,7 +929,7 @@ function 生成手机检测页面(token) {
 		'<style>body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;margin:0;background:#f5f5f7;color:#111}main{max-width:980px;margin:auto;padding:20px}.card{background:#fff;border-radius:16px;padding:16px;margin-bottom:14px;box-shadow:0 1px 8px #0000000d}h1{font-size:24px;margin:0 0 8px}p{line-height:1.55}.muted{color:#666;font-size:13px}button{border:0;border-radius:10px;padding:10px 14px;font-size:15px;margin:4px 6px 4px 0}.primary{background:#111;color:#fff}input{padding:9px;border:1px solid #ddd;border-radius:9px;width:90px}table{width:100%;border-collapse:collapse;font-size:13px}th,td{text-align:left;padding:9px 6px;border-bottom:1px solid #eee;vertical-align:top}.ok{color:#128a3a}.bad{color:#c62828}.unknown{color:#777}code{word-break:break-all;font-size:12px}.scroll{overflow:auto}</style>',
 		'</head><body><main>',
 		'<div class="card"><h1>📱 手机真实节点检测</h1><p>这里保存 iPhone / Shadowrocket 实际链路的测试结果。Cloudflare 端 node-check 只代表可达性，本页用于记录真实出口、TikTok、Gemini、延迟和下载速度。</p>',
-		'<p class="muted">快捷指令 API Token：<code id="token"></code></p><button class="primary" onclick="loadAll()">刷新</button><button onclick="copyApi()">复制 API 基址</button><button onclick="clearAll()">清空结果</button></div>',
+		'<p class="muted">快捷指令 API Token：<code id="token"></code></p><button class="primary" onclick="loadAll()">刷新</button><button onclick="copyApi()">复制 API 基址</button><button onclick="copyTestSub()">复制 Shadowrocket 测试订阅</button><button onclick="clearAll()">清空结果</button></div>',
 		'<div class="card"><label>最低速度 <input id="minMbps" type="number" value="50" min="0"> Mbps</label><button onclick="loadBest()">查看双可用优选</button><p class="muted">默认 TikTok=可用、Gemini=可用，且结果在 7 天内。</p></div>',
 		'<div class="card scroll"><table><thead><tr><th>节点</th><th>出口</th><th>延迟</th><th>速度</th><th>TikTok</th><th>Gemini</th><th>时间</th></tr></thead><tbody id="rows"></tbody></table></div>',
 		'<div class="card"><b>快捷指令调用</b><p class="muted">GET <code>/admin/mobile-check/api/tasks?token=TOKEN</code> 获取任务；POST <code>/admin/mobile-check/api/report?token=TOKEN</code> 上报；GET <code>/admin/mobile-check/api/best-add.txt?token=TOKEN&amp;minMbps=50</code> 获取实测合格 ADD 列表。</p></div>',
@@ -834,6 +944,7 @@ function 生成手机检测页面(token) {
 		'async function loadBest(){const m=document.getElementById("minMbps").value||0;const j=await (await fetch(api("best","minMbps="+encodeURIComponent(m)))).json();draw(j.results)}',
 		'async function clearAll(){if(!confirm("确认清空手机实测结果？"))return;await fetch(api("clear"),{method:"POST"});loadAll()}',
 		'async function copyApi(){await navigator.clipboard.writeText(location.origin+"/admin/mobile-check/api/");alert("已复制 API 基址")}',
+		'async function copyTestSub(){await navigator.clipboard.writeText(location.origin+"/sub?token="+encodeURIComponent(TOKEN)+"&mobiletest=1");alert("已复制 Shadowrocket 测试订阅")}',
 		'loadAll();',
 		'</script></main></body></html>'
 	];

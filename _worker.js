@@ -453,7 +453,8 @@ export default {
 							let 完整优选IP = [], 其他节点LINK = '', 反代IP池 = [];
 
 							if (!url.searchParams.has('sub') && config_JSON.优选订阅生成.local) { // 本地生成订阅
-								const 完整优选列表 = config_JSON.优选订阅生成.本地IP库.随机IP ? (
+								const 使用手机实测优选 = ['1', 'true'].includes(String(url.searchParams.get('mobilebest') || '').toLowerCase());
+								const 完整优选列表 = 使用手机实测优选 ? (await 获取手机实测优选任务(env, url)).map(item => item.node) : config_JSON.优选订阅生成.本地IP库.随机IP ? (
 									await 生成随机IP(request, config_JSON.优选订阅生成.本地IP库.随机数量, config_JSON.优选订阅生成.本地IP库.指定端口)
 								)[0] : await env.KV.get('ADD.txt') ? await 整理成数组(await env.KV.get('ADD.txt')) : (
 									await 生成随机IP(request, config_JSON.优选订阅生成.本地IP库.随机数量, config_JSON.优选订阅生成.本地IP库.指定端口)
@@ -672,6 +673,23 @@ async function 保存手机检测结果(env, results) {
 		.sort((a, b) => String(b[1]?.testedAt || '').localeCompare(String(a[1]?.testedAt || '')))
 		.slice(0, 200);
 	await env.KV.put(手机检测结果KV键, JSON.stringify(Object.fromEntries(entries)));
+}
+
+async function 获取手机实测优选任务(env, url) {
+	const minMbps = 安全数值(url.searchParams.get('minMbps'), 0, 100000) ?? 0;
+	const maxAgeHours = 安全数值(url.searchParams.get('maxAgeHours'), 1, 24 * 365) ?? 168;
+	const requireTikTok = !['0', 'false', 'no'].includes(String(url.searchParams.get('tiktok') || '1').toLowerCase());
+	const requireGemini = !['0', 'false', 'no'].includes(String(url.searchParams.get('gemini') || '1').toLowerCase());
+	const cutoff = Date.now() - maxAgeHours * 3600000;
+	const [tasks, resultMap] = await Promise.all([获取手机检测任务(env), 读取手机检测结果(env)]);
+	return tasks.filter(task => {
+		const item = resultMap[task.id];
+		if (!item || Date.parse(item.testedAt || '') < cutoff) return false;
+		if ((item.downloadMbps ?? 0) < minMbps) return false;
+		if (requireTikTok && item.tiktok !== 'ok') return false;
+		if (requireGemini && item.gemini !== 'ok') return false;
+		return true;
+	});
 }
 
 async function 处理手机检测API(request, env, url) {

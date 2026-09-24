@@ -106,9 +106,19 @@ export default {
 				} else if (访问路径 === 'admin' || 访问路径.startsWith('admin/')) {//验证cookie后响应管理页面
 					const cookies = request.headers.get('Cookie') || '';
 					const authCookie = cookies.split(';').find(c => c.trim().startsWith('auth='))?.split('=')[1];
-					// 没有cookie或cookie错误，跳转到/login页面
-					if (!authCookie || authCookie !== await MD5MD5(UA + 加密秘钥 + 管理员密码)) return new Response('重定向中...', { status: 302, headers: { 'Location': '/login' } });
-					if (访问路径 === 'admin/log.json') {// 读取日志内容
+					const 手机检测API路径 = 访问路径.startsWith('admin/mobile-check/api/');
+					const 手机检测TOKEN = url.searchParams.get('token') || request.headers.get('x-mobile-check-token') || '';
+					const 手机检测TOKEN有效 = 手机检测API路径 && 手机检测TOKEN === await MD5MD5(host + userID);
+					const 管理登录有效 = !!authCookie && authCookie === await MD5MD5(UA + 加密秘钥 + 管理员密码);
+					if (!管理登录有效 && !手机检测TOKEN有效) {
+						if (手机检测API路径) return new Response(JSON.stringify({ success: false, error: 'unauthorized' }), { status: 401, headers: { 'Content-Type': 'application/json;charset=utf-8', 'Cache-Control': 'no-store' } });
+						return new Response('重定向中...', { status: 302, headers: { 'Location': '/login' } });
+					}
+					if (访问路径 === 'admin/mobile-check' || 访问路径 === 'admin/mobile-check/') {
+						return new Response(生成手机检测页面(await MD5MD5(host + userID)), { status: 200, headers: { 'Content-Type': 'text/html;charset=utf-8', 'Cache-Control': 'no-store' } });
+					} else if (手机检测API路径) {
+						return await 处理手机检测API(request, env, url);
+					} else if (访问路径 === 'admin/log.json') {// 读取日志内容
 						const 读取日志内容 = await env.KV.get('log.json') || '[]';
 						return new Response(读取日志内容, { status: 200, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
 					} else if (区分大小写访问路径 === 'admin/getCloudflareUsage') {// 查询请求量
@@ -443,7 +453,8 @@ export default {
 							let 完整优选IP = [], 其他节点LINK = '', 反代IP池 = [];
 
 							if (!url.searchParams.has('sub') && config_JSON.优选订阅生成.local) { // 本地生成订阅
-								const 完整优选列表 = config_JSON.优选订阅生成.本地IP库.随机IP ? (
+								const 使用手机实测优选 = ['1', 'true'].includes(String(url.searchParams.get('mobilebest') || '').toLowerCase());
+								const 完整优选列表 = 使用手机实测优选 ? (await 获取手机实测优选任务(env, url)).map(item => item.node) : config_JSON.优选订阅生成.本地IP库.随机IP ? (
 									await 生成随机IP(request, config_JSON.优选订阅生成.本地IP库.随机数量, config_JSON.优选订阅生成.本地IP库.指定端口)
 								)[0] : await env.KV.get('ADD.txt') ? await 整理成数组(await env.KV.get('ADD.txt')) : (
 									await 生成随机IP(request, config_JSON.优选订阅生成.本地IP库.随机数量, config_JSON.优选订阅生成.本地IP库.指定端口)
@@ -617,6 +628,188 @@ export default {
 		return new Response(await nginx(), { status: 200, headers: { 'Content-Type': 'text/html; charset=UTF-8' } });
 	}
 };
+
+const 手机检测结果KV键 = 'mobile-check-results.json';
+
+function 规范手机检测状态(value) {
+	const v = String(value ?? '').trim().toLowerCase();
+	if (['1', 'true', 'ok', 'pass', 'available', '可用', '通过'].includes(v)) return 'ok';
+	if (['0', 'false', 'blocked', 'fail', 'unavailable', '不可用', '失败'].includes(v)) return 'blocked';
+	return 'unknown';
+}
+
+function 安全数值(value, min = 0, max = 1000000) {
+	const n = Number(value);
+	if (!Number.isFinite(n)) return null;
+	return Math.min(max, Math.max(min, n));
+}
+
+function 手机检测备注(raw) {
+	const text = String(raw || '').trim();
+	const hash = text.lastIndexOf('#');
+	if (hash < 0) return text;
+	try { return decodeURIComponent(text.slice(hash + 1)) || text; } catch (_) { return text.slice(hash + 1) || text; }
+}
+
+async function 获取手机检测任务(env) {
+	let raw = await env.KV.get('ADD.txt') || env.PROXYIP || '';
+	let list = [];
+	try { list = await 整理成数组(raw); } catch (_) { list = String(raw).split(/[\r\n,，]+/); }
+	list = [...new Set(list.map(v => String(v || '').trim()).filter(Boolean))].slice(0, 200);
+	const tasks = [];
+	for (const item of list) tasks.push({ id: await MD5MD5(item), node: item, label: 手机检测备注(item) });
+	return tasks;
+}
+
+async function 读取手机检测结果(env) {
+	try {
+		const saved = JSON.parse(await env.KV.get(手机检测结果KV键) || '{}');
+		return saved && typeof saved === 'object' && !Array.isArray(saved) ? saved : {};
+	} catch (_) { return {}; }
+}
+
+async function 保存手机检测结果(env, results) {
+	const entries = Object.entries(results)
+		.sort((a, b) => String(b[1]?.testedAt || '').localeCompare(String(a[1]?.testedAt || '')))
+		.slice(0, 200);
+	await env.KV.put(手机检测结果KV键, JSON.stringify(Object.fromEntries(entries)));
+}
+
+async function 获取手机实测优选任务(env, url) {
+	const minMbps = 安全数值(url.searchParams.get('minMbps'), 0, 100000) ?? 0;
+	const maxAgeHours = 安全数值(url.searchParams.get('maxAgeHours'), 1, 24 * 365) ?? 168;
+	const requireTikTok = !['0', 'false', 'no'].includes(String(url.searchParams.get('tiktok') || '1').toLowerCase());
+	const requireGemini = !['0', 'false', 'no'].includes(String(url.searchParams.get('gemini') || '1').toLowerCase());
+	const cutoff = Date.now() - maxAgeHours * 3600000;
+	const [tasks, resultMap] = await Promise.all([获取手机检测任务(env), 读取手机检测结果(env)]);
+	return tasks.filter(task => {
+		const item = resultMap[task.id];
+		if (!item || Date.parse(item.testedAt || '') < cutoff) return false;
+		if ((item.downloadMbps ?? 0) < minMbps) return false;
+		if (requireTikTok && item.tiktok !== 'ok') return false;
+		if (requireGemini && item.gemini !== 'ok') return false;
+		return true;
+	});
+}
+
+async function 处理手机检测API(request, env, url) {
+	const headers = {
+		'Content-Type': 'application/json;charset=utf-8',
+		'Cache-Control': 'no-store',
+		'Access-Control-Allow-Origin': '*',
+		'Access-Control-Allow-Headers': 'content-type,x-mobile-check-token',
+		'Access-Control-Allow-Methods': 'GET,POST,DELETE,OPTIONS',
+	};
+	if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers });
+	const path = url.pathname.toLowerCase();
+
+	if (path.endsWith('/tasks') && request.method === 'GET') {
+		const [tasks, results] = await Promise.all([获取手机检测任务(env), 读取手机检测结果(env)]);
+		return new Response(JSON.stringify({
+			success: true, generatedAt: new Date().toISOString(), count: tasks.length,
+			tasks: tasks.map(task => ({ ...task, lastResult: results[task.id] || null })),
+		}), { status: 200, headers });
+	}
+
+	if (path.endsWith('/results') && request.method === 'GET') {
+		const results = await 读取手机检测结果(env);
+		return new Response(JSON.stringify({
+			success: true, generatedAt: new Date().toISOString(),
+			results: Object.values(results).sort((a, b) => String(b.testedAt || '').localeCompare(String(a.testedAt || ''))),
+		}), { status: 200, headers });
+	}
+
+	if (path.endsWith('/report') && request.method === 'POST') {
+		let body;
+		try { body = await request.json(); }
+		catch (_) { return new Response(JSON.stringify({ success: false, error: '请求体必须是 JSON' }), { status: 400, headers }); }
+		const node = String(body?.node || '').trim().slice(0, 2048);
+		const nodeId = String(body?.nodeId || (node ? await MD5MD5(node) : '')).trim().toLowerCase();
+		if (!/^[0-9a-f]{32}$/i.test(nodeId)) return new Response(JSON.stringify({ success: false, error: 'nodeId 无效' }), { status: 400, headers });
+		const record = {
+			nodeId, node,
+			label: String(body?.label || 手机检测备注(node) || nodeId).slice(0, 256),
+			ip: String(body?.ip || '').trim().slice(0, 128),
+			loc: String(body?.loc || body?.country || '').trim().toUpperCase().slice(0, 16),
+			asn: String(body?.asn || '').trim().slice(0, 64),
+			isp: String(body?.isp || '').trim().slice(0, 160),
+			latencyMs: 安全数值(body?.latencyMs, 0, 120000),
+			downloadMbps: 安全数值(body?.downloadMbps, 0, 100000),
+			tiktok: 规范手机检测状态(body?.tiktok),
+			gemini: 规范手机检测状态(body?.gemini),
+			note: String(body?.note || '').slice(0, 500),
+			testedAt: new Date().toISOString(),
+		};
+		const results = await 读取手机检测结果(env);
+		results[nodeId] = record;
+		await 保存手机检测结果(env, results);
+		return new Response(JSON.stringify({ success: true, result: record }), { status: 200, headers });
+	}
+
+	if (path.endsWith('/clear') && (request.method === 'POST' || request.method === 'DELETE')) {
+		await env.KV.delete(手机检测结果KV键);
+		return new Response(JSON.stringify({ success: true }), { status: 200, headers });
+	}
+
+	if ((path.endsWith('/best') || path.endsWith('/best-add.txt')) && request.method === 'GET') {
+		const minMbps = 安全数值(url.searchParams.get('minMbps'), 0, 100000) ?? 0;
+		const maxAgeHours = 安全数值(url.searchParams.get('maxAgeHours'), 1, 24 * 365) ?? 168;
+		const requireTikTok = !['0', 'false', 'no'].includes(String(url.searchParams.get('tiktok') || '1').toLowerCase());
+		const requireGemini = !['0', 'false', 'no'].includes(String(url.searchParams.get('gemini') || '1').toLowerCase());
+		const cutoff = Date.now() - maxAgeHours * 3600000;
+		const resultMap = await 读取手机检测结果(env);
+		const eligible = item => item && Date.parse(item.testedAt || '') >= cutoff
+			&& (item.downloadMbps ?? 0) >= minMbps
+			&& (!requireTikTok || item.tiktok === 'ok')
+			&& (!requireGemini || item.gemini === 'ok');
+
+		if (path.endsWith('/best-add.txt')) {
+			const tasks = await 获取手机检测任务(env);
+			const selected = tasks.filter(task => eligible(resultMap[task.id]));
+			return new Response(selected.map(item => item.node).join('\n'), {
+				status: 200,
+				headers: { 'Content-Type': 'text/plain;charset=utf-8', 'Cache-Control': 'no-store', 'Access-Control-Allow-Origin': '*' }
+			});
+		}
+		const results = Object.values(resultMap).filter(eligible)
+			.sort((a, b) => (b.downloadMbps ?? -1) - (a.downloadMbps ?? -1) || (a.latencyMs ?? 1e9) - (b.latencyMs ?? 1e9));
+		return new Response(JSON.stringify({ success: true, count: results.length, results }), { status: 200, headers });
+	}
+
+	return new Response(JSON.stringify({ success: false, error: 'mobile-check API not found' }), { status: 404, headers });
+}
+
+
+function 生成手机检测页面(token) {
+	const safeToken = String(token || '').replace(/[<>&"']/g, '');
+	const html = [
+		'<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">',
+		'<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">',
+		'<title>手机真实节点检测</title>',
+		'<style>body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;margin:0;background:#f5f5f7;color:#111}main{max-width:980px;margin:auto;padding:20px}.card{background:#fff;border-radius:16px;padding:16px;margin-bottom:14px;box-shadow:0 1px 8px #0000000d}h1{font-size:24px;margin:0 0 8px}p{line-height:1.55}.muted{color:#666;font-size:13px}button{border:0;border-radius:10px;padding:10px 14px;font-size:15px;margin:4px 6px 4px 0}.primary{background:#111;color:#fff}input{padding:9px;border:1px solid #ddd;border-radius:9px;width:90px}table{width:100%;border-collapse:collapse;font-size:13px}th,td{text-align:left;padding:9px 6px;border-bottom:1px solid #eee;vertical-align:top}.ok{color:#128a3a}.bad{color:#c62828}.unknown{color:#777}code{word-break:break-all;font-size:12px}.scroll{overflow:auto}</style>',
+		'</head><body><main>',
+		'<div class="card"><h1>📱 手机真实节点检测</h1><p>这里保存 iPhone / Shadowrocket 实际链路的测试结果。Cloudflare 端 node-check 只代表可达性，本页用于记录真实出口、TikTok、Gemini、延迟和下载速度。</p>',
+		'<p class="muted">快捷指令 API Token：<code id="token"></code></p><button class="primary" onclick="loadAll()">刷新</button><button onclick="copyApi()">复制 API 基址</button><button onclick="clearAll()">清空结果</button></div>',
+		'<div class="card"><label>最低速度 <input id="minMbps" type="number" value="50" min="0"> Mbps</label><button onclick="loadBest()">查看双可用优选</button><p class="muted">默认 TikTok=可用、Gemini=可用，且结果在 7 天内。</p></div>',
+		'<div class="card scroll"><table><thead><tr><th>节点</th><th>出口</th><th>延迟</th><th>速度</th><th>TikTok</th><th>Gemini</th><th>时间</th></tr></thead><tbody id="rows"></tbody></table></div>',
+		'<div class="card"><b>快捷指令调用</b><p class="muted">GET <code>/admin/mobile-check/api/tasks?token=TOKEN</code> 获取任务；POST <code>/admin/mobile-check/api/report?token=TOKEN</code> 上报；GET <code>/admin/mobile-check/api/best-add.txt?token=TOKEN&amp;minMbps=50</code> 获取实测合格 ADD 列表。</p></div>',
+		'<script>',
+		'const TOKEN=' + JSON.stringify(safeToken) + ';',
+		'document.getElementById("token").textContent=TOKEN;',
+		'const api=(name,extra)=>"/admin/mobile-check/api/"+name+"?token="+encodeURIComponent(TOKEN)+(extra?"&"+extra:"");',
+		'const cls=v=>v==="ok"?"ok":v==="blocked"?"bad":"unknown",mark=v=>v==="ok"?"✅":v==="blocked"?"❌":"⚠️";',
+		'const esc=v=>String(v??"").replace(/[&<>"]/g,s=>({"&":"&amp;","<":"&lt;",">":"&gt;","\\\"":"&quot;"}[s]));',
+		'function draw(items){document.getElementById("rows").innerHTML=(items||[]).map(x=>"<tr><td>"+esc(x.label||x.node||x.nodeId||"")+"</td><td>"+esc([x.loc,x.ip,x.asn].filter(Boolean).join(" / "))+"</td><td>"+(x.latencyMs==null?"-":x.latencyMs+" ms")+"</td><td>"+(x.downloadMbps==null?"-":x.downloadMbps+" Mbps")+"</td><td class=\\\""+cls(x.tiktok)+"\\\">"+mark(x.tiktok)+"</td><td class=\\\""+cls(x.gemini)+"\\\">"+mark(x.gemini)+"</td><td>"+(x.testedAt?new Date(x.testedAt).toLocaleString():"-")+"</td></tr>").join("")||"<tr><td colspan=\\\"7\\\">暂无实测数据</td></tr>"}',
+		'async function loadAll(){const j=await (await fetch(api("results"))).json();draw(j.results)}',
+		'async function loadBest(){const m=document.getElementById("minMbps").value||0;const j=await (await fetch(api("best","minMbps="+encodeURIComponent(m)))).json();draw(j.results)}',
+		'async function clearAll(){if(!confirm("确认清空手机实测结果？"))return;await fetch(api("clear"),{method:"POST"});loadAll()}',
+		'async function copyApi(){await navigator.clipboard.writeText(location.origin+"/admin/mobile-check/api/");alert("已复制 API 基址")}',
+		'loadAll();',
+		'</script></main></body></html>'
+	];
+	return html.join('');
+}
+
 ///////////////////////////////////////////////////////////////////////叉HTTP传输数据///////////////////////////////////////////////
 const HPACKHuffman码长 = [
 	13, 23, 28, 28, 28, 28, 28, 28, 28, 24, 30, 28, 28, 30, 28, 28,

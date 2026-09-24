@@ -761,34 +761,35 @@ async function 处理手机检测API(request, env, url) {
 	return new Response(JSON.stringify({ success: false, error: 'mobile-check API not found' }), { status: 404, headers });
 }
 
+
 function 生成手机检测页面(token) {
 	const safeToken = String(token || '').replace(/[<>&"']/g, '');
-	return \`<!doctype html>
-<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<title>手机真实节点检测</title>
-<style>
-body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;margin:0;background:#f5f5f7;color:#111}main{max-width:980px;margin:auto;padding:20px}
-.card{background:#fff;border-radius:16px;padding:16px;margin-bottom:14px;box-shadow:0 1px 8px #0000000d}h1{font-size:24px;margin:0 0 8px}p{line-height:1.55}.muted{color:#666;font-size:13px}
-button{border:0;border-radius:10px;padding:10px 14px;font-size:15px;margin:4px 6px 4px 0}.primary{background:#111;color:#fff}input{padding:9px;border:1px solid #ddd;border-radius:9px;width:90px}
-table{width:100%;border-collapse:collapse;font-size:13px}th,td{text-align:left;padding:9px 6px;border-bottom:1px solid #eee;vertical-align:top}.ok{color:#128a3a}.bad{color:#c62828}.unknown{color:#777}code{word-break:break-all;font-size:12px}.scroll{overflow:auto}
-</style></head><body><main>
-<div class="card"><h1>📱 手机真实节点检测</h1><p>这里保存 iPhone / Shadowrocket 实际链路的测试结果。Cloudflare 端 node-check 只代表可达性，本页用于真实出口、TikTok、Gemini、延迟和下载速度。</p>
-<p class="muted">快捷指令 API Token：<code>\${safeToken}</code></p><button class="primary" onclick="loadAll()">刷新</button><button onclick="copyApi()">复制 API 基址</button><button onclick="clearAll()">清空结果</button></div>
-<div class="card"><label>最低速度 <input id="minMbps" type="number" value="50" min="0"> Mbps</label><button onclick="loadBest()">查看双可用优选</button><p class="muted">默认 TikTok=可用、Gemini=可用，且结果在 7 天内。</p></div>
-<div class="card scroll"><table><thead><tr><th>节点</th><th>出口</th><th>延迟</th><th>速度</th><th>TikTok</th><th>Gemini</th><th>时间</th></tr></thead><tbody id="rows"></tbody></table></div>
-<div class="card"><b>快捷指令调用</b><p class="muted">GET <code>/admin/mobile-check/api/tasks?token=TOKEN</code> 获取任务；POST <code>/admin/mobile-check/api/report?token=TOKEN</code> 上报；GET <code>/admin/mobile-check/api/best-add.txt?token=TOKEN&amp;minMbps=50</code> 获取实测合格 ADD 列表。</p></div>
-<script>
-const TOKEN=\${JSON.stringify(safeToken)};
-const api=(name,extra)=>'/admin/mobile-check/api/'+name+'?token='+encodeURIComponent(TOKEN)+(extra?'&'+extra:'');
-const cls=v=>v==='ok'?'ok':v==='blocked'?'bad':'unknown', mark=v=>v==='ok'?'✅':v==='blocked'?'❌':'⚠️';
-const esc=v=>String(v??'').replace(/[&<>"']/g,s=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[s]));
-function draw(items){document.getElementById('rows').innerHTML=(items||[]).map(x=>'<tr><td>'+esc(x.label||x.node||x.nodeId||'')+'</td><td>'+esc([x.loc,x.ip,x.asn].filter(Boolean).join(' / '))+'</td><td>'+(x.latencyMs==null?'-':x.latencyMs+' ms')+'</td><td>'+(x.downloadMbps==null?'-':x.downloadMbps+' Mbps')+'</td><td class="'+cls(x.tiktok)+'">'+mark(x.tiktok)+'</td><td class="'+cls(x.gemini)+'">'+mark(x.gemini)+'</td><td>'+(x.testedAt?new Date(x.testedAt).toLocaleString():'-')+'</td></tr>').join('')||'<tr><td colspan="7">暂无实测数据</td></tr>'}
-async function loadAll(){const j=await (await fetch(api('results'))).json();draw(j.results)}
-async function loadBest(){const m=document.getElementById('minMbps').value||0;const j=await (await fetch(api('best','minMbps='+encodeURIComponent(m)))).json();draw(j.results)}
-async function clearAll(){if(!confirm('确认清空手机实测结果？'))return;await fetch(api('clear'),{method:'POST'});loadAll()}
-async function copyApi(){await navigator.clipboard.writeText(location.origin+'/admin/mobile-check/api/');alert('已复制 API 基址')}
-loadAll();
-</script></main></body></html>\`;
+	const html = [
+		'<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">',
+		'<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">',
+		'<title>手机真实节点检测</title>',
+		'<style>body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;margin:0;background:#f5f5f7;color:#111}main{max-width:980px;margin:auto;padding:20px}.card{background:#fff;border-radius:16px;padding:16px;margin-bottom:14px;box-shadow:0 1px 8px #0000000d}h1{font-size:24px;margin:0 0 8px}p{line-height:1.55}.muted{color:#666;font-size:13px}button{border:0;border-radius:10px;padding:10px 14px;font-size:15px;margin:4px 6px 4px 0}.primary{background:#111;color:#fff}input{padding:9px;border:1px solid #ddd;border-radius:9px;width:90px}table{width:100%;border-collapse:collapse;font-size:13px}th,td{text-align:left;padding:9px 6px;border-bottom:1px solid #eee;vertical-align:top}.ok{color:#128a3a}.bad{color:#c62828}.unknown{color:#777}code{word-break:break-all;font-size:12px}.scroll{overflow:auto}</style>',
+		'</head><body><main>',
+		'<div class="card"><h1>📱 手机真实节点检测</h1><p>这里保存 iPhone / Shadowrocket 实际链路的测试结果。Cloudflare 端 node-check 只代表可达性，本页用于记录真实出口、TikTok、Gemini、延迟和下载速度。</p>',
+		'<p class="muted">快捷指令 API Token：<code id="token"></code></p><button class="primary" onclick="loadAll()">刷新</button><button onclick="copyApi()">复制 API 基址</button><button onclick="clearAll()">清空结果</button></div>',
+		'<div class="card"><label>最低速度 <input id="minMbps" type="number" value="50" min="0"> Mbps</label><button onclick="loadBest()">查看双可用优选</button><p class="muted">默认 TikTok=可用、Gemini=可用，且结果在 7 天内。</p></div>',
+		'<div class="card scroll"><table><thead><tr><th>节点</th><th>出口</th><th>延迟</th><th>速度</th><th>TikTok</th><th>Gemini</th><th>时间</th></tr></thead><tbody id="rows"></tbody></table></div>',
+		'<div class="card"><b>快捷指令调用</b><p class="muted">GET <code>/admin/mobile-check/api/tasks?token=TOKEN</code> 获取任务；POST <code>/admin/mobile-check/api/report?token=TOKEN</code> 上报；GET <code>/admin/mobile-check/api/best-add.txt?token=TOKEN&amp;minMbps=50</code> 获取实测合格 ADD 列表。</p></div>',
+		'<script>',
+		'const TOKEN=' + JSON.stringify(safeToken) + ';',
+		'document.getElementById("token").textContent=TOKEN;',
+		'const api=(name,extra)=>"/admin/mobile-check/api/"+name+"?token="+encodeURIComponent(TOKEN)+(extra?"&"+extra:"");',
+		'const cls=v=>v==="ok"?"ok":v==="blocked"?"bad":"unknown",mark=v=>v==="ok"?"✅":v==="blocked"?"❌":"⚠️";',
+		'const esc=v=>String(v??"").replace(/[&<>"]/g,s=>({"&":"&amp;","<":"&lt;",">":"&gt;","\\\"":"&quot;"}[s]));',
+		'function draw(items){document.getElementById("rows").innerHTML=(items||[]).map(x=>"<tr><td>"+esc(x.label||x.node||x.nodeId||"")+"</td><td>"+esc([x.loc,x.ip,x.asn].filter(Boolean).join(" / "))+"</td><td>"+(x.latencyMs==null?"-":x.latencyMs+" ms")+"</td><td>"+(x.downloadMbps==null?"-":x.downloadMbps+" Mbps")+"</td><td class=\\\""+cls(x.tiktok)+"\\\">"+mark(x.tiktok)+"</td><td class=\\\""+cls(x.gemini)+"\\\">"+mark(x.gemini)+"</td><td>"+(x.testedAt?new Date(x.testedAt).toLocaleString():"-")+"</td></tr>").join("")||"<tr><td colspan=\\\"7\\\">暂无实测数据</td></tr>"}',
+		'async function loadAll(){const j=await (await fetch(api("results"))).json();draw(j.results)}',
+		'async function loadBest(){const m=document.getElementById("minMbps").value||0;const j=await (await fetch(api("best","minMbps="+encodeURIComponent(m)))).json();draw(j.results)}',
+		'async function clearAll(){if(!confirm("确认清空手机实测结果？"))return;await fetch(api("clear"),{method:"POST"});loadAll()}',
+		'async function copyApi(){await navigator.clipboard.writeText(location.origin+"/admin/mobile-check/api/");alert("已复制 API 基址")}',
+		'loadAll();',
+		'</script></main></body></html>'
+	];
+	return html.join('');
 }
 
 ///////////////////////////////////////////////////////////////////////叉HTTP传输数据///////////////////////////////////////////////

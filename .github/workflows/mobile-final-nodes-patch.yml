@@ -1,0 +1,80 @@
+name: Patch mobile final-node tasks
+on:
+  push:
+    branches: [feature/mobile-final-nodes]
+    paths: [.github/workflows/mobile-final-nodes-patch.yml]
+permissions:
+  contents: write
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/mobile-final-nodes
+      - name: Expand ADD sources into real test tasks
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('_worker.js')
+          s=p.read_text(encoding='utf-8-sig')
+          old="""async function 获取手机检测任务(env) {
+\tlet raw = await env.KV.get('ADD.txt') || env.PROXYIP || '';
+\tlet list = [];
+\ttry { list = await 整理成数组(raw); } catch (_) { list = String(raw).split(/[\\r\\n,，]+/); }
+\tlist = [...new Set(list.map(v => String(v || '').trim()).filter(Boolean))].slice(0, 200);
+\tconst tasks = [];
+\tfor (const item of list) tasks.push({ id: await MD5MD5(item), node: item, label: 手机检测备注(item) });
+\treturn tasks;
+}"""
+          new="""async function 获取手机检测任务(env) {
+\tlet raw = await env.KV.get('ADD.txt') || env.PROXYIP || '';
+\tlet list = [];
+\ttry { list = await 整理成数组(raw); } catch (_) { list = String(raw).split(/[\\r\\n,，]+/); }
+\tlist = [...new Set(list.map(v => String(v || '').trim()).filter(Boolean))];
+
+\t// 与本地订阅生成逻辑保持一致：先展开 https/sub:// 优选源，再把实际入口交给手机测试。
+\tconst apiSources = [], directNodes = [], passthroughLinks = [];
+\tfor (const item of list) {
+\t\tconst addressPart = item.split('#')[0].trim();
+\t\tif (/^sub:\\/\\//i.test(addressPart) || /^https?:\\/\\//i.test(addressPart)) apiSources.push(item);
+\t\telse if (/^[a-z][a-z0-9+.-]*:\\/\\//i.test(addressPart)) passthroughLinks.push(item);
+\t\telse directNodes.push(item);
+\t}
+
+\tlet expanded = [], expandedLinks = '';
+\tif (apiSources.length) {
+\t\ttry {
+\t\t\tconst apiResult = await 请求优选API(apiSources, '443', 5000);
+\t\t\texpanded = Array.isArray(apiResult?.[0]) ? apiResult[0] : [];
+\t\t\texpandedLinks = typeof apiResult?.[1] === 'string' ? apiResult[1] : '';
+\t\t} catch (_) { }
+\t}
+\tif (expandedLinks) passthroughLinks.push(...expandedLinks.split(/\\r?\\n/).map(v => v.trim()).filter(Boolean));
+
+\tconst finalNodes = [...new Set(directNodes.concat(expanded).map(v => String(v || '').trim()).filter(Boolean))].slice(0, 200);
+\tconst tasks = [];
+\tfor (const item of finalNodes) {
+\t\tconst label = 手机检测备注(item);
+\t\ttasks.push({ id: await MD5MD5(item), node: item, label, selectName: label, kind: 'entry' });
+\t}
+\t// 已经是完整代理 URI 的项目保留，但明确标记，后续快捷指令可按 label/selectName 处理。
+\tfor (const item of [...new Set(passthroughLinks)].slice(0, Math.max(0, 200 - tasks.length))) {
+\t\tconst label = 手机检测备注(item);
+\t\ttasks.push({ id: await MD5MD5(item), node: item, label, selectName: label, kind: 'proxy-link' });
+\t}
+\treturn tasks;
+}"""
+          if old not in s:
+              raise SystemExit('target function not found; aborting')
+          s=s.replace(old,new,1)
+          p.write_text(s,encoding='utf-8')
+          PY
+          node --check _worker.js
+      - name: Commit patch
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add _worker.js
+          git commit -m "feat: expand mobile tasks to final test entries"
+          git push origin HEAD:feature/mobile-final-nodes

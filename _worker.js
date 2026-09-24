@@ -586,7 +586,7 @@ export default {
 								});
 						}
 
-						if (手机测试订阅 && 订阅类型 === 'mixed') 订阅内容 = await 重命名手机测试订阅(订阅内容);
+						if (手机测试订阅 && 订阅类型 === 'mixed') 订阅内容 = await 重命名手机测试订阅(订阅内容, env);
 						if (订阅类型 === 'mixed' && (!ua.includes('mozilla') || url.searchParams.has('b64') || url.searchParams.has('base64'))) 订阅内容 = btoa(订阅内容);
 
 						if (订阅类型 === 'singbox') {
@@ -728,9 +728,27 @@ async function 生成手机节点选择名(raw, fallbackLabel = '') {
 	return `MC-${shortId} ${label}`;
 }
 
-async function 重命名手机测试订阅(订阅内容) {
+const 手机测试映射KV键 = 'mobile-check-final-mapping.json';
+
+async function 保存手机最终映射(env, nodes) {
+	try {
+		if (!env?.KV || typeof env.KV.put !== 'function') return;
+		await env.KV.put(手机测试映射KV键, JSON.stringify(nodes));
+	} catch (_) {}
+}
+
+async function 读取手机最终映射(env) {
+	try {
+		if (!env?.KV || typeof env.KV.get !== 'function') return [];
+		const data = JSON.parse(await env.KV.get(手机测试映射KV键) || '[]');
+		return Array.isArray(data) ? data : [];
+	} catch (_) { return []; }
+}
+
+async function 重命名手机测试订阅(订阅内容, env) {
 	const lines = String(订阅内容 || '').split(/\r?\n/);
 	const output = [];
+	const mapping = [];
 
 	for (const rawLine of lines) {
 		const line = rawLine.trim();
@@ -741,6 +759,7 @@ async function 重命名手机测试订阅(订阅内容) {
 
 		const info = 解析手机节点信息(line);
 		const selectName = await 生成手机节点选择名(line, info.label);
+		mapping.push({ id: await MD5MD5(line), node: line, label: info.label, selectName });
 
 		if (info.protocol === 'vmess' && info.vmess) {
 			try {
@@ -754,10 +773,15 @@ async function 重命名手机测试订阅(订阅内容) {
 		output.push((hash >= 0 ? line.slice(0, hash) : line) + '#' + encodeURIComponent(selectName));
 	}
 
+	await 保存手机最终映射(env, mapping);
 	return output.join('\n');
 }
 
 async function 获取手机检测任务(env) {
+	const finalMapping = await 读取手机最终映射(env);
+	if (finalMapping.length) return finalMapping.map(item => ({
+		id: item.id, node: item.node, label: item.label, selectName: item.selectName, kind: 'final-sub'
+	}));
 	let raw = await env.KV.get('ADD.txt') || env.PROXYIP || '';
 	let list = [];
 	try { list = await 整理成数组(raw); } catch (_) { list = String(raw).split(/[\r\n,，]+/); }

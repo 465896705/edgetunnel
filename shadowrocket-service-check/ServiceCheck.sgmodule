@@ -1,0 +1,17 @@
+#!name=节点服务体检
+#!desc=检测当前代理出口对 TikTok、Gemini、ChatGPT、X 的 Web 层可用性，并显示出口 IP/国家/ASN。无需 MITM，不读取 Cookie。
+#!system=ios
+
+[Script]
+节点服务体检 = type=cron,cronexp="0 9 * * *",script-path=https://raw.githubusercontent.com/465896705/edgetunnel/main/shadowrocket-service-check/service-check.js,timeout=30,enable=false
+
+[Rule]
+DOMAIN-SUFFIX,tiktok.com,PROXY
+DOMAIN-SUFFIX,tiktokcdn.com,PROXY
+DOMAIN,gemini.google.com,PROXY
+DOMAIN-SUFFIX,googleapis.com,PROXY
+DOMAIN,chatgpt.com,PROXY
+DOMAIN-SUFFIX,openai.com,PROXY
+DOMAIN,x.com,PROXY
+DOMAIN-SUFFIX,twitter.com,PROXY
+DOMAIN,ipinfo.io,PROXY
